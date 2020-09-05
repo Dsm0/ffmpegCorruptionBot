@@ -9,100 +9,19 @@ import io
 import xml.etree.ElementTree as ET
 from datetime import timedelta, datetime
 from urllib.request import urlretrieve, urlcleanup
-# from mastodon import Mastodon
-import config
 
+import sys
 
-TIMEOUT = 30
+TIMEOUT = 300
 DURATION = 20
+
 
 def getoutput(cmd):
     return SP.check_output(cmd, shell=False, encoding="utf-8")
 
-# m = Mastodon(
-    # config.CLIENT_ID,
-    # config.CLIENT_SECRET,
-    # config.ACCESS_TOKEN,
-    # api_base_url=config.INSTANCE,
-# )
 
-# ffmpeg_exec = config.FFMPEG_PATH
 ffmpeg_exec = "/bin/ffmpeg"
-# ffprobe_exec = config.FFPROBE_PATH
 ffprobe_exec = "/bin/ffprobe"
-
-
-def get_attrs(node, *attrs):
-    ret = {}
-    for attr in attrs:
-        ret[attr] = getattr(next(node.iter(attr), None), "text", None)
-        if ret[attr] is None:
-            del ret[attr]
-    return ret
-
-
-def get_source_name(path):
-    base = os.path.splitext(path)[0]
-    folder = os.path.dirname(path)
-    parent_nfos = []
-    while os.path.isdir(folder) and folder != os.path.abspath(
-        os.path.join(folder, "..")
-    ):
-        folder = os.path.abspath(os.path.join(folder, ".."))
-        parent_nfos += glob(os.path.join(folder, "*.nfo"))
-    nfo = "{}.nfo".format(base)
-    if os.path.isfile(nfo):
-        parent_nfos.insert(0, nfo)
-    info = {"title": []}
-    for nfo in parent_nfos:
-        if os.path.isfile(nfo):
-            with open(nfo, "r", encoding="utf-8") as nfo_fh:
-                try:
-                    data = io.StringIO("<nfo>{}</nfo>".format(nfo_fh.read()))
-                    tree = ET.parse(data)
-                except Exception:
-                    nfo_fh.seek(0)
-                    try:
-                        tree = ET.parse(nfo_fh)
-                    except Exception as e:
-                        print("Error:", nfo, e)
-                        continue
-            root = tree.getroot()
-            root = root.find("nfo") or root
-            nfo_data = get_attrs(
-                root, "title", "season", "episode", "year", "premiered"
-            )
-            if nfo_data.get("title") is not None:
-                info["title"].append(nfo_data.pop("title"))
-            if nfo_data.get("season", None) == "-1":
-                del nfo_data["season"]
-            if nfo_data.get("episode", None) == "-1":
-                del nfo_data["episode"]
-            info.update(nfo_data)
-    if info.get("year") is None and info.get("premiered") is not None:
-        info["year"] = info["premiered"].split("-")[0]
-    if info.get("year") is None:
-        info["year"] = "Unknown"
-    if len(info["title"]) == 2:
-        info["title"], info["show"] = info["title"]
-        return "{show} | Season {season} | Episode {episode} | {title} | {year}".format(
-            **info
-        )
-    else:
-        info["title"] = info["title"][0]
-        return "{title} ({year})".format(**info)
-    return None
-
-def make_bsf(noise=None, drop=None):
-    if drop == 0:
-        drop = None
-    key = (noise is not None, drop is not None)
-    return {
-        (False, False): None,  # both None
-        (True, False): f"noise=amount={noise}",  # only noise given
-        (False, True): f"noise=dropamount={drop}",  # only drop given
-        (True, True): f"noise=amount={noise}:dropamount={drop}",  # both given
-    }[key]
 
 
 def try_delete(filename, ignore=False):
@@ -116,6 +35,27 @@ def try_delete(filename, ignore=False):
         except PermissionError:
             print("Can't remove", filename, "retrying...")
             time.sleep(1)
+
+
+def get_attrs(node, *attrs):
+    ret = {}
+    for attr in attrs:
+        ret[attr] = getattr(next(node.iter(attr), None), "text", None)
+        if ret[attr] is None:
+            del ret[attr]
+    return ret
+
+
+def make_bsf(noise=None, drop=None):
+    if drop == 0:
+        drop = None
+    key = (noise is not None, drop is not None)
+    return {
+        (False, False): None,  # both None
+        (True, False): f"noise=amount={noise}",  # only noise given
+        (False, True): f"noise=dropamount={drop}",  # only drop given
+        (True, True): f"noise=amount={noise}:dropamount={drop}",  # both given
+    }[key]
 
 
 def pipe(cmds, **kwargs):
@@ -177,6 +117,8 @@ def probe(vid_file_path):
 
     pipe = SP.Popen(command, stdout=SP.PIPE, stderr=SP.STDOUT)
     out, err = pipe.communicate()
+    if err:
+        print(err)
     return json.loads(out)
 
 
@@ -401,7 +343,7 @@ def ac_process(
     return outfile, pipe(commands), dict(info)
 
 
-def vc_process(infile, start, duration, vcodec, noise_amt, drop_amt=None):
+def vc_process(infile, i, start, duration, vcodec, noise_amt, drop_amt=None):
     print("[Video] Glitching", infile, "with", vcodec)
     ffmpeg = [
         ffmpeg_exec,
@@ -413,7 +355,8 @@ def vc_process(infile, start, duration, vcodec, noise_amt, drop_amt=None):
         "-abort_on",
         "empty_output",
     ]
-    outfile = os.path.join("out", f"v_{vcodec}_{noise_amt}_{drop_amt}.webm")
+    outfile = os.path.join(
+        "out", f"v_{os.path.splitext(infile)[0][:-3]}_{i}_{vcodec}_{noise_amt}_{drop_amt}.webm")
     if os.path.isfile(outfile):
         print("outfile is file")
         try_delete(outfile)
@@ -542,7 +485,7 @@ except Exception:
     pass
 
 
-def v_glitch(filename, submitter=None, start=0, duration=10):
+def v_glitch(filename, i, submitter=None, start=0, duration=10):
     while True:
         noise_amt = None
         drop_amt = None
@@ -553,22 +496,22 @@ def v_glitch(filename, submitter=None, start=0, duration=10):
             drop_amt = None
             if random.random() > 0.5:
                 drop_amt = int((1 / random.random()))
-        args = (filename, start, duration, random.choice(vcodecs), noise_amt, drop_amt)
-        # print(filename)
+        print("noise_amt", noise_amt, "drop_amt", drop_amt)
+        args = (filename, i, start, duration,
+                random.choice(vcodecs), noise_amt, drop_amt)
         filename, status, info = vc_process(*args)
-        # print(filename)
         if status is None:
             break
         if os.path.isfile(filename) and os.stat(filename).st_size < 1024:
             try_delete(filename)
-            return None, "outfile too small, ffmpeg error: {}".format(status)
+            return filename, "outfile too small, ffmpeg error: {}".format(status), True
         if set(status) == {0}:
             break
         if not os.path.isfile(filename):
             print("suppousedly no file")
             # return None, "outfile does not exist, ffmpeg error: {}".format(status)
         # try_delete(filename)
-        return None, "ffmpeg error: {}".format(status)
+        return filename, "ffmpeg error: {}".format(status), True
     info = type("Info", (object,), info)
     submitter = submitter or "Random selection"
     start = str(timedelta(seconds=start))
@@ -580,7 +523,7 @@ Codec: {info.codec}
 Noise amount: {info.noise}
 Packet loss: {info.drop}
     """.strip()
-    return filename, info_text
+    return filename, info_text, False
 
 
 def a_glitch(filename, submitter=None, start=0, duration=10):
@@ -641,48 +584,6 @@ Size Skew: {info.skew[0]}, {info.skew[1]}
     return filename, info_text
 
 
-def get_next_vid():
-    return ("me","https://assets.merveilles.town/media_attachments/files/000/888/641/original/47c73512c47f4a8e.mp4")
-
-    def src_info(path):
-        return get_source_name(path), path
-
-    to_glitch = []
-    my_vids = []
-    __category = random.choice(list(config.SOURCES.values()))
-    __entry = random.choice(__category)
-    entries = []
-    for ext in config.EXTS:
-        for e in glob(__entry.format(ext)):
-            entries.append(e)
-    posts = m.fetch_remaining(m.account_statuses(m.me().id, only_media=True))
-    for post in posts:
-        for atch in post.media_attachments:
-            my_vids.append((post.url, atch.url))
-    for notif in m.notifications():
-        if notif.type == "mention":
-            for atch in notif.status.media_attachments:
-                to_glitch.append((notif.status.url, atch.url))
-            if notif.status.in_reply_to_id:
-                for anc in m.status_context(notif.status.id).ancestors:
-                    if anc.media_attachments:
-                        if m.me().id == anc.account.id:
-                            continue
-                        for atch in anc.media_attachments:
-                            to_glitch.append((anc.url, atch.url))
-    pool = []
-    if my_vids:
-        pool.extend(random.choices(my_vids, k=3))
-    if to_glitch:
-        pool.extend(random.choices(to_glitch, k=3))
-    if entries:
-        pool.extend(map(src_info, random.choices(entries, k=3)))
-    return random.choice(pool)
-
-
-
-
-
 def prepare_file(uplodad=False):
     if uplodad:
         for file in glob("out/**"):
@@ -691,62 +592,32 @@ def prepare_file(uplodad=False):
                     os.unlink(file)
                 except Exception:
                     pass
-    while True:
+    for i in range(20):
+        print("on loop", i + 1)
         submitter = "me"
-        vid = "/tmp/tmp20f6e10p"
+        vid = sys.argv[1]
         duration = get_duration(vid)
         print(duration)
         start = 0
-        if duration > DURATION: 
+        if duration > DURATION:
             start = int(random.random() * (duration - DURATION))
             duration = DURATION
-        filename, info_text = v_glitch(
-            vid, submitter, start, duration
+        filename, info_text, failed = v_glitch(
+            vid, i, submitter, start, duration
         )
         urlcleanup()
-        if filename:
-            print("filename if'ed")
-            print(info_text)
-            # break
-        else:
+        if failed:
             print("something went wrong")
             print("FAILED:", info_text)
-            # continue
-    if uplodad:
-        media = m.media_post(filename, description="a glitchy video")
-    else:
-        media = {"id": None}
-    return info_text, filename, media["id"]
-
-
-def make_post(post_immediately=False):
-    # next_t = (datetime.now() + timedelta(hours=config.INTERVAL)).replace(
-        # minute=0, second=0, microsecond=0
-    # )
-    print("[{}] Preparing".format(datetime.today()))
-    info_text, filename, file_id = prepare_file()
-
-    if next_t <= datetime.now():
-        delay = timedelta(seconds=0)
-    else:
-        delay = next_t - datetime.now()
-    if not post_immediately:
-        print("[{}] Sleeping for {} ...".format(datetime.today(), delay))
-        time.sleep(delay.total_seconds())
-    print("[{}] Posting...".format(datetime.today()))
-    print(info_text)
-    # m.status_post(
-        # info_text,
-        # media_ids=file_id,
-        # sensitive=True,
-        # spoiler_text="may contain flashing lights and/or colors (also check for content warnings regarding the source material)",
-    # )
-    # os.unlink(filename)
-
+        else:
+            print("filename if'ed")
+            print(info_text)
+            print("new path:", filename)
+            vid = filename
+    return info_text, filename
 
 
 prepare_file()
 
-while True:
-    make_post()
-
+# while True:
+#     make_post()
