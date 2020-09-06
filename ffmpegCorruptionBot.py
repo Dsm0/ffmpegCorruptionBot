@@ -14,6 +14,7 @@ import sys
 
 TIMEOUT = 300
 DURATION = 20
+MINSIZE = 1024
 
 
 def getoutput(cmd):
@@ -355,8 +356,10 @@ def vc_process(infile, i, start, duration, vcodec, noise_amt, drop_amt=None):
         "-abort_on",
         "empty_output",
     ]
+    filename = infile.split("/")[-1]
+    print(filename)
     outfile = os.path.join(
-        "out", f"v_{os.path.splitext(infile)[0][:-3]}_{i}_{vcodec}_{noise_amt}_{drop_amt}.webm")
+        "out", f"v_{filename}_{i}_{vcodec}_{noise_amt}_{drop_amt}.webm")
     if os.path.isfile(outfile):
         print("outfile is file")
         try_delete(outfile)
@@ -502,7 +505,7 @@ def v_glitch(filename, i, submitter=None, start=0, duration=10):
         filename, status, info = vc_process(*args)
         if status is None:
             break
-        if os.path.isfile(filename) and os.stat(filename).st_size < 1024:
+        if os.path.isfile(filename) and os.stat(filename).st_size < MINSIZE:
             try_delete(filename)
             return filename, "outfile too small, ffmpeg error: {}".format(status), True
         if set(status) == {0}:
@@ -592,7 +595,8 @@ def prepare_file(uplodad=False):
                     os.unlink(file)
                 except Exception:
                     pass
-    for i in range(20):
+    i = 0
+    while i < 8:
         print("on loop", i + 1)
         submitter = "me"
         vid = sys.argv[1]
@@ -614,6 +618,7 @@ def prepare_file(uplodad=False):
             print(info_text)
             print("new path:", filename)
             vid = filename
+            i += 1
     return info_text, filename
 
 
